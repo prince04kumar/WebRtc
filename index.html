@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Video Call</title>
+  <style>
+    video { width: 300px; height: 225px; margin: 10px; border: 1px solid #ccc; }
+    #callUI { display: none; }
+  </style>
+</head>
+<body>
+  <h1>WebRTC Video Call</h1>
+  <div id="setupUI">
+    <button id="createRoomBtn">Create Room</button>
+    <p>OR</p>
+    <input type="text" id="roomIdInput" placeholder="Enter Room ID" />
+    <button id="joinRoomBtn">Join Room</button>
+  </div>
+  <div id="callUI">
+    <video id="localVideo" autoplay muted></video>
+    <video id="remoteVideo" autoplay></video>
+  </div>
+
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <script>
+    const socket = io('http://localhost:3000');
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+    const createRoomBtn = document.getElementById('createRoomBtn');
+    const joinRoomBtn = document.getElementById('joinRoomBtn');
+    const roomIdInput = document.getElementById('roomIdInput');
+    const setupUI = document.getElementById('setupUI');
+    const callUI = document.getElementById('callUI');
+
+    let localStream;
+    let peerConnection;
+    let roomId;
+
+    const iceServers = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" }, // STUN (Only helps P2P)
+    {
+      urls: "turn:relay.metered.ca:80", // TURN (Fallback for NAT issues)
+      username: "your_username",
+      credential: "your_password"
+    }
+  ]
+};
+
+    function generateRoomId() {
+        return Math.random().toString(36).substring(2, 8).toUpperCase();
+    }
+
+    async function startMedia() {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = localStream;
+        } catch (error) {
+            console.error('Media access denied:', error);
+            alert('Allow camera/microphone access!');
+        }
+    }
+
+    function setupPeerConnection() {
+        peerConnection = new RTCPeerConnection(iceServers);
+
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+        // ✅ Explicitly set remote stream
+        const remoteStream = new MediaStream();
+        remoteVideo.srcObject = remoteStream;
+
+        peerConnection.ontrack = (event) => {
+            event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        };
+
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                socket.emit('signal', { roomId, candidate: event.candidate });
+            }
+        };
+
+        socket.on('signal', async (data) => {
+            try {
+                if (data.offer) {
+                    await peerConnection.setRemoteDescription(data.offer);
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    socket.emit('signal', { roomId, answer });
+                } else if (data.answer) {
+                    await peerConnection.setRemoteDescription(data.answer);
+                } else if (data.candidate) {
+                    await peerConnection.addIceCandidate(data.candidate);
+                }
+            } catch (error) {
+                console.error('Signaling error:', error);
+            }
+        });
+    }
+
+    socket.on('createOffer', async () => {
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        socket.emit('signal', { roomId, offer });
+    });
+
+    async function joinRoom(room) {
+        roomId = room;
+        await startMedia();
+        setupPeerConnection();
+        socket.emit('joinRoom', roomId);
+        setupUI.style.display = 'none';
+        callUI.style.display = 'block';
+    }
+
+    createRoomBtn.addEventListener('click', () => {
+        roomId = generateRoomId();
+        alert(`Room ID: ${roomId} (Share with others)`);
+        joinRoom(roomId);
+    });
+
+    joinRoomBtn.addEventListener('click', () => {
+        roomId = roomIdInput.value.trim();
+        if (roomId) joinRoom(roomId);
+        else alert('Enter a room ID!');
+    });
+</script>
+
+</body>
+</html>
