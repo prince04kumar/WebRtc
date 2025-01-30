@@ -5,7 +5,7 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
-
+const PORT = 3000 ;
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/index.html');
 });
@@ -41,6 +41,6 @@ io.on('connection', (socket) => {
         }
     });
 });
-server.listen(3000, () => {
+server.listen(PORT, () => {
   console.log('Server running on http://localhost:3000');
 });
