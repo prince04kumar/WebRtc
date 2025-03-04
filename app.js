@@ -11,36 +11,52 @@ app.get('/', (req, res) => {
 });
 
 const rooms = {};
-
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
-
+  
     socket.on('joinRoom', (roomId) => {
-        socket.join(roomId);
-        console.log(`User ${socket.id} joined room ${roomId}`);
-
-        if (!rooms[roomId]) rooms[roomId] = [];
-        rooms[roomId].push(socket.id);
-
-        if (rooms[roomId].length === 2) {
-            io.to(rooms[roomId][0]).emit('createOffer');
-        }
+      socket.join(roomId);
+      console.log(`User ${socket.id} joined room ${roomId}`);
+  
+      if (!rooms[roomId]) rooms[roomId] = [];
+      rooms[roomId].push(socket.id);
+  
+      if (rooms[roomId].length === 2) {
+        io.to(rooms[roomId][0]).emit('createOffer');
+      }
     });
-
+  
     socket.on('signal', (data) => {
-        if (data.roomId) {
-            socket.to(data.roomId).emit('signal', data);
-        }
+      if (data.roomId) {
+        socket.to(data.roomId).emit('signal', data);
+      }
     });
-
+  
+    socket.on('startScreenShare', (data) => {
+      socket.to(data.roomId).emit('startScreenShare', data.streamId);
+    });
+  
+    socket.on('stopScreenShare', (roomId) => {
+      socket.to(roomId).emit('stopScreenShare');
+    });
+  
+    socket.on('endCall', (roomId) => {
+      socket.to(roomId).emit('endCall');
+      socket.leave(roomId);
+      if (rooms[roomId]) {
+        rooms[roomId] = rooms[roomId].filter(id => id !== socket.id);
+        if (rooms[roomId].length === 0) delete rooms[roomId];
+      }
+    });
+  
     socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.id);
-        for (const roomId in rooms) {
-            rooms[roomId] = rooms[roomId].filter(id => id !== socket.id);
-            if (rooms[roomId].length === 0) delete rooms[roomId];
-        }
+      console.log('User disconnected:', socket.id);
+      for (const roomId in rooms) {
+        rooms[roomId] = rooms[roomId].filter(id => id !== socket.id);
+        if (rooms[roomId].length === 0) delete rooms[roomId];
+      }
     });
-});
-server.listen(3000, () => {
+  });
+server.listen(4000, () => {
   console.log('Server running on http://localhost:3000');
 });
