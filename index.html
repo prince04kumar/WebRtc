@@ -3,8 +3,51 @@
 <head>
   <title>WebRTC Video Call</title>
   <style>
-    video { width: 300px; height: 225px; margin: 10px; border: 1px solid #ccc; }
-    #callUI { display: none; }
+    body {
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      background-color: #f0f0f0;
+    }
+    #setupUI, #callUI {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    video {
+      width: 100%;
+      max-width: 600px;
+      height: auto;
+      margin: 10px;
+      border: 1px solid #ccc;
+    }
+    #localVideo {
+      position: absolute;
+      width: 150px;
+      height: auto;
+      border: 2px solid #000;
+      cursor: move;
+    }
+    #callUI {
+      display: none;
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    #remoteVideo {
+      width: 100%;
+      height: 100%;
+    }
+    button {
+      margin: 5px;
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -18,6 +61,11 @@
   <div id="callUI">
     <video id="localVideo" autoplay muted></video>
     <video id="remoteVideo" autoplay></video>
+    <button id="endCallBtn">End Call</button>
+    <button id="muteAudioBtn">Mute Audio</button>
+    <button id="muteVideoBtn">Mute Video</button>
+    <button id="startScreenShareBtn">Start Screen Share</button>
+    <button id="stopScreenShareBtn" style="display:none;">Stop Screen Share</button>
   </div>
 
   <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
@@ -30,100 +78,238 @@
     const roomIdInput = document.getElementById('roomIdInput');
     const setupUI = document.getElementById('setupUI');
     const callUI = document.getElementById('callUI');
+    const endCallBtn = document.getElementById('endCallBtn');
+    const muteAudioBtn = document.getElementById('muteAudioBtn');
+    const muteVideoBtn = document.getElementById('muteVideoBtn');
+    const startScreenShareBtn = document.getElementById('startScreenShareBtn');
+    const stopScreenShareBtn = document.getElementById('stopScreenShareBtn');
 
     let localStream;
     let peerConnection;
     let roomId;
+    let screenStream;
 
     const iceServers = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" }, // STUN (Only helps P2P)
-    {
-      urls: "turn:relay.metered.ca:80", // TURN (Fallback for NAT issues)
-      username: "your_username",
-      credential: "your_password"
-    }
-  ]
-};
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" }, // STUN (Only helps P2P)
+        {
+          urls: "turn:relay.metered.ca:80", // TURN (Fallback for NAT issues)
+          username: "your_username",
+          credential: "your_password"
+        }
+      ]
+    };
 
     function generateRoomId() {
-        return Math.random().toString(36).substring(2, 8).toUpperCase();
+      return Math.random().toString(36).substring(2, 8).toUpperCase();
+    }
+
+    function saveRoomId(roomId) {
+      localStorage.setItem('roomId', roomId);
+    }
+
+    function getSavedRoomId() {
+      return localStorage.getItem('roomId');
+    }
+
+    function clearSavedRoomId() {
+      localStorage.removeItem('roomId');
     }
 
     async function startMedia() {
-        try {
-            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            localVideo.srcObject = localStream;
-        } catch (error) {
-            console.error('Media access denied:', error);
-            alert('Allow camera/microphone access!');
-        }
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideo.srcObject = localStream;
+      } catch (error) {
+        console.error('Media access denied:', error);
+        alert('Allow camera/microphone access!');
+      }
+    }
+
+    async function startScreenShare() {
+      try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screenTrack = screenStream.getVideoTracks()[0];
+        const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+        sender.replaceTrack(screenTrack);
+        socket.emit('startScreenShare', { roomId, streamId: screenTrack.id });
+
+        screenTrack.onended = () => {
+          stopScreenShare();
+        };
+
+        startScreenShareBtn.style.display = 'none';
+        stopScreenShareBtn.style.display = 'block';
+      } catch (error) {
+        console.error('Screen share failed:', error);
+      }
+    }
+
+    function stopScreenShare() {
+      const videoTrack = localStream.getVideoTracks()[0];
+      const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+      sender.replaceTrack(videoTrack);
+      screenStream.getTracks().forEach(track => track.stop());
+      socket.emit('stopScreenShare', roomId);
+      startScreenShareBtn.style.display = 'block';
+      stopScreenShareBtn.style.display = 'none';
     }
 
     function setupPeerConnection() {
-        peerConnection = new RTCPeerConnection(iceServers);
+      peerConnection = new RTCPeerConnection(iceServers);
 
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-        // ✅ Explicitly set remote stream
-        const remoteStream = new MediaStream();
-        remoteVideo.srcObject = remoteStream;
+      const remoteStream = new MediaStream();
+      remoteVideo.srcObject = remoteStream;
 
-        peerConnection.ontrack = (event) => {
-            event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-        };
+      peerConnection.ontrack = (event) => {
+        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+      };
 
-        peerConnection.onicecandidate = (event) => {
-            if (event.candidate) {
-                socket.emit('signal', { roomId, candidate: event.candidate });
-            }
-        };
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('signal', { roomId, candidate: event.candidate });
+        }
+      };
 
-        socket.on('signal', async (data) => {
-            try {
-                if (data.offer) {
-                    await peerConnection.setRemoteDescription(data.offer);
-                    const answer = await peerConnection.createAnswer();
-                    await peerConnection.setLocalDescription(answer);
-                    socket.emit('signal', { roomId, answer });
-                } else if (data.answer) {
-                    await peerConnection.setRemoteDescription(data.answer);
-                } else if (data.candidate) {
-                    await peerConnection.addIceCandidate(data.candidate);
-                }
-            } catch (error) {
-                console.error('Signaling error:', error);
-            }
-        });
+      socket.on('signal', async (data) => {
+        try {
+          if (data.offer) {
+            await peerConnection.setRemoteDescription(data.offer);
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            socket.emit('signal', { roomId, answer });
+          } else if (data.answer) {
+            await peerConnection.setRemoteDescription(data.answer);
+          } else if (data.candidate) {
+            await peerConnection.addIceCandidate(data.candidate);
+          }
+        } catch (error) {
+          console.error('Signaling error:', error);
+        }
+      });
+
+      socket.on('startScreenShare', (streamId) => {
+        const screenTrack = screenStream.getVideoTracks().find(track => track.id === streamId);
+        if (screenTrack) {
+          peerConnection.addTrack(screenTrack, screenStream);
+        }
+      });
+
+      socket.on('stopScreenShare', () => {
+        screenStream.getTracks().forEach(track => track.stop());
+      });
     }
 
     socket.on('createOffer', async () => {
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        socket.emit('signal', { roomId, offer });
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      socket.emit('signal', { roomId, offer });
     });
 
     async function joinRoom(room) {
-        roomId = room;
-        await startMedia();
-        setupPeerConnection();
-        socket.emit('joinRoom', roomId);
-        setupUI.style.display = 'none';
-        callUI.style.display = 'block';
+      roomId = room;
+      saveRoomId(roomId);
+      await startMedia();
+      setupPeerConnection();
+      socket.emit('joinRoom', roomId);
+      setupUI.style.display = 'none';
+      callUI.style.display = 'block';
     }
 
     createRoomBtn.addEventListener('click', () => {
-        roomId = generateRoomId();
-        alert(`Room ID: ${roomId} (Share with others)`);
-        joinRoom(roomId);
+      roomId = generateRoomId();
+      alert(`Room ID: ${roomId} (Share with others)`);
+      joinRoom(roomId);
     });
 
     joinRoomBtn.addEventListener('click', () => {
-        roomId = roomIdInput.value.trim();
-        if (roomId) joinRoom(roomId);
-        else alert('Enter a room ID!');
+      roomId = roomIdInput.value.trim();
+      if (roomId) joinRoom(roomId);
+      else alert('Enter a room ID!');
     });
-</script>
 
+    endCallBtn.addEventListener('click', () => {
+      socket.emit('endCall', roomId);
+      peerConnection.close();
+      clearSavedRoomId();
+      setupUI.style.display = 'block';
+      callUI.style.display = 'none';
+    });
+
+    muteAudioBtn.addEventListener('click', () => {
+      localStream.getAudioTracks().forEach(track => track.enabled = !track.enabled);
+      muteAudioBtn.textContent = localStream.getAudioTracks()[0].enabled ? 'Mute Audio' : 'Unmute Audio';
+    });
+
+    muteVideoBtn.addEventListener('click', () => {
+      localStream.getVideoTracks().forEach(track => track.enabled = !track.enabled);
+      muteVideoBtn.textContent = localStream.getVideoTracks()[0].enabled ? 'Mute Video' : 'Unmute Video';
+    });
+
+    startScreenShareBtn.addEventListener('click', startScreenShare);
+    stopScreenShareBtn.addEventListener('click', stopScreenShare);
+
+    socket.on('endCall', () => {
+      peerConnection.close();
+      clearSavedRoomId();
+      setupUI.style.display = 'block';
+      callUI.style.display = 'none';
+    });
+
+    socket.on('reconnect', () => {
+      const savedRoomId = getSavedRoomId();
+      if (savedRoomId) {
+        joinRoom(savedRoomId);
+      }
+    });
+
+    // Make local video draggable
+    localVideo.addEventListener('mousedown', (event) => {
+      let shiftX = event.clientX - localVideo.getBoundingClientRect().left;
+      let shiftY = event.clientY - localVideo.getBoundingClientRect().top;
+
+      function moveAt(pageX, pageY) {
+        localVideo.style.left = pageX - shiftX + 'px';
+        localVideo.style.top = pageY - shiftY + 'px';
+      }
+
+      function onMouseMove(event) {
+        moveAt(event.pageX, event.pageY);
+      }
+
+      document.addEventListener('mousemove', onMouseMove);
+
+      localVideo.onmouseup = function() {
+        document.removeEventListener('mousemove', onMouseMove);
+        localVideo.onmouseup = null;
+      };
+    });
+
+    localVideo.ondragstart = function() {
+      return false;
+    };
+
+    // Fullscreen mode for remote video
+    remoteVideo.addEventListener('dblclick', () => {
+      if (remoteVideo.requestFullscreen) {
+        remoteVideo.requestFullscreen();
+      } else if (remoteVideo.mozRequestFullScreen) { // Firefox
+        remoteVideo.mozRequestFullScreen();
+      } else if (remoteVideo.webkitRequestFullscreen) { // Chrome, Safari and Opera
+        remoteVideo.webkitRequestFullscreen();
+      } else if (remoteVideo.msRequestFullscreen) { // IE/Edge
+        remoteVideo.msRequestFullscreen();
+      }
+    });
+
+    window.addEventListener('load', () => {
+      const savedRoomId = getSavedRoomId();
+      if (savedRoomId) {
+        joinRoom(savedRoomId);
+      }
+    });
+  </script>
 </body>
 </html>
